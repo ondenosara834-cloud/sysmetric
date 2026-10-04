@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Travis CI : même contrôles que GitHub Actions, sur une 2e plateforme CI
+# ---------------------------------------------------------------------------
+os: linux
+dist: jammy
+language: python
+python:
+  - "3.12"
+
+services:
+  - docker
+
+# Historique complet : nécessaire pour que Gitleaks scanne tous les commits
+git:
+  depth: false
+
+branches:
+  only:
+    - main
+
+cache: pip
+
+env:
+  global:
+    - GITLEAKS_VERSION=8.21.2
+    # Trivy 0.69.4 à 0.69.6 ont été compromis (mars 2026) : on épingle une version saine
+    - TRIVY_IMAGE=aquasec/trivy:0.69.3
+
+install:
+  - pip install --upgrade pip
+  - pip install -r requirements.txt -r requirements-dev.txt
+
+# Les "stages" s'exécutent dans l'ordre ; si un stage échoue, les suivants ne démarrent pas
+stages:
+  - quality
+  - security
+  - docker
+
+jobs:
+  include:
+    # ---------------- Stage 1 : lint + tests ----------------
+    - stage: quality
+      name: "Lint + tests"
+      script:
+        - flake8 app
+        - pytest -v --cov=app --cov-report=term-missing --cov-fail-under=80
+
+    # ---------------- Stage 2 : sécurité ----------------
+    - stage: security
+      name: "SAST (Bandit)"
+      script:
+        - bandit -r app -x app/tests
+
+    - stage: security
+      name: "Dépendances (pip-audit)"
+      script:
+        - pip-audit -r requirements.txt --strict
+
+    - stage: security
+      name: "Secrets (Gitleaks)"
+      install: skip
+      script:
+        - curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+        - ./gitleaks detect --source . --redact --verbose
+
+    # ---------------- Stage 3 : build + scan de l'image ----------------
+    - stage: docker
+      name: "Build & scan image (Trivy)"
+      install: skip
+      script:
+        - docker build --target base -t sysmetrics:$TRAVIS_COMMIT .
+        - >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE
+          image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 sysmetrics:$TRAVIS_COMMIT

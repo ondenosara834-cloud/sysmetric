@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Contrôles exécutés SUR VOTRE MACHINE, avant que le code parte sur GitHub.
+# Installation (une seule fois) :
+#   pip install pre-commit
+#   pre-commit install --hook-type pre-commit --hook-type pre-push
+# ---------------------------------------------------------------------------
+# Par défaut, les hooks tournent au "git commit"
+default_stages: [pre-commit]
+
+repos:
+  # Vérifications générales
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key        # bloque les clés privées (id_rsa, .pem...)
+
+  # Qualité du code Python
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+
+  # Failles de sécurité dans le code Python
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.0
+    hooks:
+      - id: bandit
+        exclude: ^app/tests/
+
+  # Secrets (tokens, mots de passe, clés API) dans les fichiers commités
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # Au moment du "git push" uniquement : tests + audit des dépendances
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (tests unitaires)
+        entry: pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: pip-audit
+        name: pip-audit (vulnérabilités des dépendances)
+        entry: pip-audit -r requirements.txt
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

@@ -1,0 +1,7 @@
+# Outils de développement / CI (non embarqués dans l'image Docker)
+pytest>=8.0.0
+pytest-cov>=5.0.0
+flake8>=7.0.0
+bandit>=1.8.0
+pip-audit>=2.7.0
+pre-commit>=3.7.0
