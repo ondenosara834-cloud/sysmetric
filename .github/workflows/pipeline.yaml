@@ -1,9 +1,6 @@
 name: Pipeline CI/CD
 
-# ---------------------------------------------------------------------------
-# Déclencheurs : à chaque push / pull request sur main
-# (+ lancement manuel depuis l'onglet "Actions" de GitHub)
-# ---------------------------------------------------------------------------
+# Déclencheurs du pipeline
 on:
   push:
     branches:
@@ -13,28 +10,22 @@ on:
       - main
   workflow_dispatch:
 
-# Principe du moindre privilège : par défaut le pipeline ne peut que LIRE le dépôt.
-# Chaque job qui a besoin de plus le demande explicitement.
+# Permissions minimales par défaut
 permissions:
   contents: read
 
-# Un seul pipeline à la fois par branche.
-# Sur une pull request : un nouveau push annule l'ancien pipeline (gain de temps).
-# Sur main : on N'ANNULE JAMAIS un pipeline en cours (il peut être en train de
-# publier l'image) ; le suivant attend simplement son tour.
+# Un seul pipeline actif par branche
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   PYTHON_VERSION: "3.12"
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/sysmetrics
 
 jobs:
 
-  # =========================================================================
-  # ÉTAPE 1 — CI : installation + qualité du code (lint)
-  # =========================================================================
+  # CI : installation et lint
   install-dependencies:
     name: Installation & lint
     runs-on: ubuntu-24.04
@@ -46,7 +37,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip            # met en cache les paquets pip -> pipeline plus rapide
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -56,9 +47,7 @@ jobs:
       - name: Lint (flake8)
         run: flake8 app
 
-  # =========================================================================
-  # ÉTAPE 2 — CI : tests automatisés + couverture de code
-  # =========================================================================
+  # CI : tests et couverture
   tests:
     name: Tests unitaires
     runs-on: ubuntu-24.04
@@ -85,16 +74,11 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
-  # =========================================================================
-  # ÉTAPE 3 — SÉCURITÉ (DevSecOps) : 4 contrôles en parallèle
-  # =========================================================================
-
-  # 3a. SAST : analyse statique du code Python à la recherche de failles
-  #     (injection de commandes, eval, mots de passe en dur, SSL désactivé...)
+  # DevSecOps : contrôles de sécurité
+  # SAST : analyse statique du code
   sast-bandit:
     name: "Sécurité : SAST (Bandit)"
     runs-on: ubuntu-24.04
-    needs: install-dependencies
     steps:
       - uses: actions/checkout@v4
 
@@ -106,13 +90,7 @@ jobs:
         run: pip install "bandit>=1.8"
 
       - name: Run Bandit
-        # -r app        : analyse récursive du dossier app
-        # -x app/tests  : on ignore les tests (les "assert" y sont normaux)
-        run: |
-          bandit -r app -x app/tests -f txt -o bandit-report.txt || true
-          cat bandit-report.txt
-          # Ce second appel fait échouer le job s'il reste une faille
-          bandit -r app -x app/tests
+        run: bandit -r app -x app/tests -f txt -o bandit-report.txt
 
       - name: Upload Bandit report
         if: always()
@@ -121,12 +99,10 @@ jobs:
           name: bandit-report
           path: bandit-report.txt
 
-  # 3b. SCA : vérifie que les bibliothèques de requirements.txt
-  #     n'ont pas de vulnérabilités connues (CVE)
+  # SCA : audit des dépendances
   dependency-audit:
     name: "Sécurité : dépendances (pip-audit)"
     runs-on: ubuntu-24.04
-    needs: install-dependencies
     steps:
       - uses: actions/checkout@v4
 
@@ -140,35 +116,29 @@ jobs:
       - name: Audit requirements.txt
         run: pip-audit -r requirements.txt --strict
 
-  # 3c. Détection de secrets (mots de passe, tokens, clés API) dans TOUT
-  #     l'historique Git, pas seulement dans la dernière version
+  # Détection de secrets dans l'historique Git
   secrets-scan:
     name: "Sécurité : secrets (Gitleaks)"
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # récupère tout l'historique des commits
+          fetch-depth: 0
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Requis uniquement si le dépôt appartient à une ORGANISATION GitHub
-          # (licence gratuite sur gitleaks.io). Inutile pour un compte personnel.
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
-  # 3d. CodeQL : analyse sémantique avancée de GitHub
-  #     Les résultats apparaissent dans l'onglet "Security" du dépôt.
-  #     (Gratuit sur dépôt public ; sur dépôt privé il faut GitHub Advanced Security)
+  # Analyse CodeQL
   codeql:
     name: "Sécurité : CodeQL"
     runs-on: ubuntu-24.04
-    needs: install-dependencies
     if: ${{ !github.event.repository.private }}
     permissions:
       contents: read
-      security-events: write   # pour publier les alertes dans l'onglet Security
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -180,10 +150,7 @@ jobs:
       - name: Analyze
         uses: github/codeql-action/analyze@v4
 
-  # =========================================================================
-  # ÉTAPE 4 — BUILD de l'image Docker + scan de sécurité de l'image
-  #           (ne démarre que si TOUS les tests et contrôles sont verts)
-  # =========================================================================
+  # Build et scan de l'image Docker
   docker-build-scan:
     name: Build & scan image Docker (Trivy)
     runs-on: ubuntu-24.04
@@ -200,7 +167,7 @@ jobs:
           scan-type: config
           scan-ref: .
           severity: CRITICAL,HIGH
-          exit-code: "0"          # rapport uniquement (affiché dans les logs)
+          exit-code: "0"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -210,7 +177,7 @@ jobs:
         with:
           context: .
           target: base
-          load: true              # garde l'image en local pour la scanner
+          load: true
           push: false
           tags: sysmetrics:${{ github.sha }}
           cache-from: type=gha
@@ -226,11 +193,7 @@ jobs:
           docker logs smoke
           exit 1
 
-      # Scan des vulnérabilités de l'image (OS Debian + paquets Python)
-      # Politique de sécurité en 2 temps :
-      #  1) RAPPORT : toutes les failles HIGH et CRITICAL sont listées (n'échoue pas)
-      #  2) PORTE DE QUALITÉ : le pipeline est BLOQUÉ s'il reste une faille
-      #     CRITICAL qui a un correctif disponible.
+      # Rapport HIGH/CRITICAL, puis blocage sur les CRITICAL corrigibles.
       - name: Rapport Trivy (HIGH + CRITICAL)
         uses: aquasecurity/trivy-action@v0.35.0
         with:
@@ -258,37 +221,28 @@ jobs:
           image-ref: sysmetrics:${{ github.sha }}
           format: table
           severity: CRITICAL
-          ignore-unfixed: true    # on ne bloque que sur les failles qui ont un correctif
+          ignore-unfixed: true
           exit-code: "1"
-          skip-setup-trivy: true  # Trivy est déjà installé par l'étape précédente
+          skip-setup-trivy: true
 
-  # =========================================================================
-  # ÉTAPE 5 — CD (Continuous Delivery) : publication de l'image sur GHCR
-  #           Uniquement sur un push sur main (pas sur une pull request)
-  # =========================================================================
+  # CD : publication sur Docker Hub
   publish-image:
-    name: Publication image (GHCR)
+    name: Publication image (Docker Hub)
     runs-on: ubuntu-24.04
     needs: [docker-build-scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
-      packages: write           # droit d'écrire dans GitHub Container Registry
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # fourni automatiquement par GitHub
-
-      # Le nom d'image doit être en minuscules pour GHCR
-      - name: Compute image name
-        run: echo "IMAGE=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build & push API image
         uses: docker/build-push-action@v6
@@ -297,8 +251,8 @@ jobs:
           target: base
           push: true
           tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
 
       - name: Build & push agent image
@@ -308,6 +262,6 @@ jobs:
           target: agent
           push: true
           tags: |
-            ${{ env.IMAGE }}-agent:latest
-            ${{ env.IMAGE }}-agent:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}-agent:latest
+            ${{ env.IMAGE_NAME }}-agent:${{ github.sha }}
           cache-from: type=gha

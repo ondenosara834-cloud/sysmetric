@@ -44,3 +44,4 @@ FROM base AS agent
 HEALTHCHECK NONE
 
 CMD ["python", "-m", "app.agent"]
+

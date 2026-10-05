@@ -1,6 +1,4 @@
-# ---------------------------------------------------------------------------
-# Travis CI : même contrôles que GitHub Actions, sur une 2e plateforme CI
-# ---------------------------------------------------------------------------
+
 os: linux
 dist: jammy
 language: python
